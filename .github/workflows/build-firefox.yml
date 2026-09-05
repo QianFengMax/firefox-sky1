@@ -28,7 +28,6 @@ jobs:
 
       - name: Get Firefox source code from Mozilla official
         run: |
-          # 设置 Firefox ESR 版本，你可以根据需要修改
           FIREFOX_VERSION="140.14.0esr"
           DOWNLOAD_URL="https://ftp.mozilla.org/pub/firefox/releases/${FIREFOX_VERSION}/source/firefox-${FIREFOX_VERSION}.source.tar.xz"
           
@@ -54,7 +53,25 @@ jobs:
       - name: Apply V4L2-M2M patches
         run: |
           cd "${{ env.FIREFOX_SRC_DIR }}"
+          
+          # 复制 debian 文件夹
           cp -r ../debian .
+          
+          # 进入 debian/patches 目录
+          cd debian/patches
+          
+          # 创建 series 文件，列出所有补丁（按顺序）
+          cat > series << 'EOF'
+          Prefer-V4L2-M2M-over-VAAPI-for-hw-decode.patch
+          Fix-V4L2-M2M-timestamp-handling.patch
+          Add-V4L2-M2M-AV1-decoder-support.patch
+          Enable-V4L2-M2M-AV1-hardware-decode-check.patch
+          EOF
+          
+          # 回到源码根目录
+          cd ../..
+          
+          # 应用补丁
           quilt push -a
 
       - name: Build Debian package
