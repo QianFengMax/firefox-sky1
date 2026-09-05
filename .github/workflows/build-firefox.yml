@@ -1,17 +1,25 @@
-name: Build Firefox with V4L2-M2M Patches
+name: Build Firefox with V4L2-M2M Support
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    
+
     steps:
+      # 1. 检出你的仓库（它包含完整的 debian 目录）
       - name: Checkout firefox-sky1 repository
         uses: actions/checkout@v4
+        with:
+          path: firefox-sky1-repo  # 明确克隆到子目录，避免路径混乱
 
-      - name: Install dependencies
+      # 2. 安装构建依赖
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -26,108 +34,87 @@ jobs:
             yasm libvpx-dev \
             wget
 
-      - name: Get Firefox source code from Mozilla official
+      # 3. 下载并解压 Firefox 源码
+      - name: Download Firefox ESR source
         run: |
           FIREFOX_VERSION="140.14.0esr"
           DOWNLOAD_URL="https://ftp.mozilla.org/pub/firefox/releases/${FIREFOX_VERSION}/source/firefox-${FIREFOX_VERSION}.source.tar.xz"
-          
-          echo "Downloading Firefox ESR source from: $DOWNLOAD_URL"
+          echo "Downloading from: $DOWNLOAD_URL"
           wget -O firefox-source.tar.xz "$DOWNLOAD_URL"
-          
-          if [ $? -ne 0 ]; then
-            echo "Error: Failed to download Firefox ESR source code."
-            echo "Please check if the version ${FIREFOX_VERSION} exists at https://ftp.mozilla.org/pub/firefox/releases/"
-            exit 1
-          fi
-          
           tar -xf firefox-source.tar.xz
-          
           FIREFOX_SRC_DIR=$(find . -maxdepth 1 -type d -name "firefox-*" | head -n 1)
-          if [ -z "$FIREFOX_SRC_DIR" ]; then
-            echo "Error: Cannot find the extracted Firefox source directory."
-            exit 1
-          fi
           echo "FIREFOX_SRC_DIR=${FIREFOX_SRC_DIR}" >> $GITHUB_ENV
           echo "Firefox source directory: ${FIREFOX_SRC_DIR}"
 
-      - name: Apply V4L2-M2M patches
+      # 4. 复制 debian 目录并应用补丁（核心步骤，路径已修正）
+      - name: Setup and apply Debian patches
+        working-directory: ${{ env.FIREFOX_SRC_DIR }}
         run: |
-          cd "${{ env.FIREFOX_SRC_DIR }}"
+          # 关键路径：你的仓库被克隆到 ../firefox-sky1-repo/
+          DEBIAN_SOURCE_DIR="../firefox-sky1-repo/debian"
           
-          # 复制完整的 debian 文件夹
-          cp -r ../debian .
-          
-          # 进入 debian/patches 目录
-          cd debian/patches
-          
-          # 获取当前系统架构
+          echo "=== Debug: Checking source directory ==="
+          ls -la "$DEBIAN_SOURCE_DIR" || { echo "ERROR: debian source not found!"; exit 1; }
+          echo "=== Debug: Checking patches directory ==="
+          ls -la "$DEBIAN_SOURCE_DIR/patches" || { echo "ERROR: patches directory not found!"; exit 1; }
+
+          # 复制完整的 debian 文件夹到当前 Firefox 源码目录
+          cp -r "$DEBIAN_SOURCE_DIR" .
+
+          # 获取系统架构
           ARCH=$(uname -m)
           echo "Detected architecture: $ARCH"
-          
-          # 创建完整的 series 文件，包含所有补丁
-          cat > series << 'EOF'
-          Add-debian-extra-stuff-to-upstream-build-system-dire.patch
-          Allow-.js-preference-files-to-set-locked-prefs-with-.patch
-          Avoid-using-vmrs-vmsr-on-armel.patch
-          Avoid-wrong-sessionstore-data-to-keep-windows-out-of.patch
-          Disable-format-security-warning-when-disabling-forma.patch
-          Don-t-auto-disable-extensions-in-system-directories.patch
-          Don-t-build-image-gtests.patch
-          Fix-math_private.h-for-i386-FTBFS.patch
-          Relax-nodejs-minimum-version.patch
-          Remove-workaround-for-old-libstdc-problem-which-now-.patch
-          Set-DPI-to-system-settings.patch
-          Use-the-Mozilla-Location-Service-key-when-the-Google.patch
-          Work-around-GCC-ICE-on-ppc64el.patch
-          Work-around-https-sourceware.org-bugzilla-show_bug.c.patch
-          Adjust-our-gfx-skia-moz.build-patch-to-upstream-chan.patch
-          Allow-to-override-rust-LTO-flag.patch
-          Add-a-2-minutes-timeout-on-xpcshell-tests.patch
-          Add-another-preferences-directory-for-applications-p.patch
-          Prefer-V4L2-M2M-over-VAAPI-for-hw-decode.patch
-          Fix-V4L2-M2M-timestamp-handling.patch
-          Add-V4L2-M2M-AV1-decoder-support.patch
-          Enable-V4L2-M2M-AV1-hardware-decode-check.patch
-          EOF
-          
-          # 如果是 ARM64 (aarch64)，移除架构不兼容的补丁
+
+          # 进入补丁目录，使用仓库中已有的 series 文件
+          cd debian/patches
+
+          # 验证 series 文件存在
+          if [ ! -f "series" ]; then
+            echo "ERROR: series file not found in patches directory!"
+            exit 1
+          fi
+
+          # 针对 ARM64 架构过滤不兼容的补丁
           if [[ "$ARCH" == "aarch64" ]] || [[ "$ARCH" == "arm64" ]]; then
             echo "ARM64 detected: Removing incompatible patches..."
-            # 移除 i386 相关补丁
+            # 使用 sed -i 直接修改 series 文件
             sed -i '/i386/d' series
-            # 移除 PowerPC 相关补丁
             sed -i '/ppc64el/d' series
-            # 移除 armel 相关补丁（旧 ARM 架构）
             sed -i '/armel/d' series
             echo "Filtered series file for ARM64:"
           else
             echo "Non-ARM64 architecture: Applying all patches."
           fi
-          
+
           # 显示最终的 series 文件内容用于调试
           echo "Final series file content:"
           cat series
           echo ""
-          echo "Patch files in directory:"
-          ls -la *.patch | head -20
-          
-          # 回到源码根目录
+          echo "Available patch files:"
+          ls -la *.patch
+
+          # 回到源码根目录并应用补丁
           cd ../..
-          
-          # 应用补丁
+          echo "Applying patches with quilt..."
           quilt push -a || {
             echo "Failed to apply patches. Checking quilt status..."
             quilt push -v
             exit 1
           }
+          echo "All patches applied successfully."
 
+      # 5. 构建 Debian 包
       - name: Build Debian package
+        working-directory: ${{ env.FIREFOX_SRC_DIR }}
         run: |
-          cd "${{ env.FIREFOX_SRC_DIR }}"
           dpkg-buildpackage -us -uc -b
 
-      - name: Upload built .deb packages
+      # 6. 上传构建产物
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: firefox-v4l2-debs
-          path: ./*.deb
+          name: firefox-debs
+          path: |
+            ../*.deb
+            ../*.dsc
+            ../*.tar.xz
