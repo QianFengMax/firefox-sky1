@@ -1,0 +1,53 @@
+name: Build Firefox with V4L2-M2M Patches
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout firefox-sky1 repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debhelper dpkg-dev quilt meson ninja-build \
+            libva-dev libdrm-dev \
+            autoconf2.13 unzip zip \
+            libgtk-3-dev libglib2.0-dev \
+            libpulse-dev libasound2-dev \
+            libx11-xcb-dev libxtst-dev \
+            python3 python3-distutils \
+            cargo rustc \
+            yasm libvpx-dev \
+            wget
+
+      - name: Get Firefox source code
+        run: |
+          sudo sed -i '/^# deb-src/s/^# //' /etc/apt/sources.list
+          sudo apt-get update
+          apt-get source firefox-esr
+
+      - name: Apply V4L2-M2M patches
+        run: |
+          FIREFOX_SRC_DIR=$(find . -maxdepth 1 -type d -name "firefox-esr-*" | head -n 1)
+          echo "Firefox source directory: $FIREFOX_SRC_DIR"
+          cp -r ./debian "$FIREFOX_SRC_DIR/"
+          cd "$FIREFOX_SRC_DIR"
+          quilt push -a
+
+      - name: Build Debian package
+        run: |
+          FIREFOX_SRC_DIR=$(find . -maxdepth 1 -type d -name "firefox-esr-*" | head -n 1)
+          cd "$FIREFOX_SRC_DIR"
+          dpkg-buildpackage -us -uc -b
+
+      - name: Upload built .deb packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-v4l2-debs
+          path: ./*.deb
