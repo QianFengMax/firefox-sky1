@@ -1,120 +1,54 @@
-name: Build Firefox with V4L2-M2M Support
+# 关键路径：你的仓库被克隆到 ../firefox-sky1-repo/
+DEBIAN_SOURCE_DIR="../firefox-sky1-repo/debian"
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+echo "=== Debug: Checking source directory ==="
+ls -la "$DEBIAN_SOURCE_DIR" || { echo "ERROR: debian source not found!"; exit 1; }
+echo "=== Debug: Checking patches directory ==="
+ls -la "$DEBIAN_SOURCE_DIR/patches" || { echo "ERROR: patches directory not found!"; exit 1; }
 
-jobs:
-  build:
-    runs-on: ubuntu-22.04
+# 复制完整的 debian 文件夹到当前 Firefox 源码目录
+cp -r "$DEBIAN_SOURCE_DIR" .
 
-    steps:
-      # 1. 检出你的仓库（它包含完整的 debian 目录）
-      - name: Checkout firefox-sky1 repository
-        uses: actions/checkout@v4
-        with:
-          path: firefox-sky1-repo  # 明确克隆到子目录，避免路径混乱
+# 获取系统架构
+ARCH=$(uname -m)
+echo "Detected architecture: $ARCH"
 
-      # 2. 安装构建依赖
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            debhelper dpkg-dev quilt meson ninja-build \
-            libva-dev libdrm-dev \
-            autoconf2.13 unzip zip \
-            libgtk-3-dev libglib2.0-dev \
-            libpulse-dev libasound2-dev \
-            libx11-xcb-dev libxtst-dev \
-            python3 python3-distutils \
-            cargo rustc \
-            yasm libvpx-dev \
-            wget
+# 进入补丁目录，使用仓库中已有的 series 文件
+cd debian/patches
 
-      # 3. 下载并解压 Firefox 源码
-      - name: Download Firefox ESR source
-        run: |
-          FIREFOX_VERSION="140.14.0esr"
-          DOWNLOAD_URL="https://ftp.mozilla.org/pub/firefox/releases/${FIREFOX_VERSION}/source/firefox-${FIREFOX_VERSION}.source.tar.xz"
-          echo "Downloading from: $DOWNLOAD_URL"
-          wget -O firefox-source.tar.xz "$DOWNLOAD_URL"
-          tar -xf firefox-source.tar.xz
-          FIREFOX_SRC_DIR=$(find . -maxdepth 1 -type d -name "firefox-*" | head -n 1)
-          echo "FIREFOX_SRC_DIR=${FIREFOX_SRC_DIR}" >> $GITHUB_ENV
-          echo "Firefox source directory: ${FIREFOX_SRC_DIR}"
+# 验证 series 文件存在
+if [ ! -f "series" ]; then
+  echo "ERROR: series file not found in patches directory!"
+  exit 1
+fi
 
-      # 4. 复制 debian 目录并应用补丁（核心步骤，路径已修正）
-      - name: Setup and apply Debian patches
-        working-directory: ${{ env.FIREFOX_SRC_DIR }}
-        run: |
-          # 关键路径：你的仓库被克隆到 ../firefox-sky1-repo/
-          DEBIAN_SOURCE_DIR="../firefox-sky1-repo/debian"
-          
-          echo "=== Debug: Checking source directory ==="
-          ls -la "$DEBIAN_SOURCE_DIR" || { echo "ERROR: debian source not found!"; exit 1; }
-          echo "=== Debug: Checking patches directory ==="
-          ls -la "$DEBIAN_SOURCE_DIR/patches" || { echo "ERROR: patches directory not found!"; exit 1; }
+# 针对 ARM64 架构过滤不兼容的补丁
+if [[ "$ARCH" == "aarch64" ]] || [[ "$ARCH" == "arm64" ]]; then
+  echo "ARM64 detected: Removing incompatible patches..."
+  # 使用 sed -i 直接修改 series 文件
+  sed -i '/i386/d' series
+  sed -i '/ppc64el/d' series
+  sed -i '/armel/d' series
+  echo "Filtered series file for ARM64:"
+else
+  echo "Non-ARM64 architecture: Applying all patches."
+fi
 
-          # 复制完整的 debian 文件夹到当前 Firefox 源码目录
-          cp -r "$DEBIAN_SOURCE_DIR" .
+# 显示最终的 series 文件内容用于调试
+echo "Final series file content:"
+cat series
+echo ""
 
-          # 获取系统架构
-          ARCH=$(uname -m)
-          echo "Detected architecture: $ARCH"
+# 修复：列出 debian-hacks 子目录下的补丁文件
+echo "Available patch files:"
+ls -la debian-hacks/*.patch 2>/dev/null || echo "No patch files found in debian-hacks/"
 
-          # 进入补丁目录，使用仓库中已有的 series 文件
-          cd debian/patches
-
-          # 验证 series 文件存在
-          if [ ! -f "series" ]; then
-            echo "ERROR: series file not found in patches directory!"
-            exit 1
-          fi
-
-          # 针对 ARM64 架构过滤不兼容的补丁
-          if [[ "$ARCH" == "aarch64" ]] || [[ "$ARCH" == "arm64" ]]; then
-            echo "ARM64 detected: Removing incompatible patches..."
-            # 使用 sed -i 直接修改 series 文件
-            sed -i '/i386/d' series
-            sed -i '/ppc64el/d' series
-            sed -i '/armel/d' series
-            echo "Filtered series file for ARM64:"
-          else
-            echo "Non-ARM64 architecture: Applying all patches."
-          fi
-
-          # 显示最终的 series 文件内容用于调试
-          echo "Final series file content:"
-          cat series
-          echo ""
-          echo "Available patch files:"
-          ls -la *.patch
-
-          # 回到源码根目录并应用补丁
-          cd ../..
-          echo "Applying patches with quilt..."
-          quilt push -a || {
-            echo "Failed to apply patches. Checking quilt status..."
-            quilt push -v
-            exit 1
-          }
-          echo "All patches applied successfully."
-
-      # 5. 构建 Debian 包
-      - name: Build Debian package
-        working-directory: ${{ env.FIREFOX_SRC_DIR }}
-        run: |
-          dpkg-buildpackage -us -uc -b
-
-      # 6. 上传构建产物
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: firefox-debs
-          path: |
-            ../*.deb
-            ../*.dsc
-            ../*.tar.xz
+# 回到源码根目录并应用补丁
+cd ../..
+echo "Applying patches with quilt..."
+quilt push -a || {
+  echo "Failed to apply patches. Checking quilt status..."
+  quilt push -v
+  exit 1
+}
+echo "All patches applied successfully."
