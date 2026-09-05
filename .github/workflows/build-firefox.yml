@@ -26,24 +26,40 @@ jobs:
             yasm libvpx-dev \
             wget
 
-      - name: Get Firefox source code
+      - name: Get Firefox source code from Mozilla official
         run: |
-          sudo sed -i '/^# deb-src/s/^# //' /etc/apt/sources.list
-          sudo apt-get update
-          apt-get source firefox-esr
+          # 设置 Firefox ESR 版本，你可以根据需要修改
+          FIREFOX_VERSION="140.14.0esr"
+          DOWNLOAD_URL="https://ftp.mozilla.org/pub/firefox/releases/${FIREFOX_VERSION}/source/firefox-${FIREFOX_VERSION}.source.tar.xz"
+          
+          echo "Downloading Firefox ESR source from: $DOWNLOAD_URL"
+          wget -O firefox-source.tar.xz "$DOWNLOAD_URL"
+          
+          if [ $? -ne 0 ]; then
+            echo "Error: Failed to download Firefox ESR source code."
+            echo "Please check if the version ${FIREFOX_VERSION} exists at https://ftp.mozilla.org/pub/firefox/releases/"
+            exit 1
+          fi
+          
+          tar -xf firefox-source.tar.xz
+          
+          FIREFOX_SRC_DIR=$(find . -maxdepth 1 -type d -name "firefox-*" | head -n 1)
+          if [ -z "$FIREFOX_SRC_DIR" ]; then
+            echo "Error: Cannot find the extracted Firefox source directory."
+            exit 1
+          fi
+          echo "FIREFOX_SRC_DIR=${FIREFOX_SRC_DIR}" >> $GITHUB_ENV
+          echo "Firefox source directory: ${FIREFOX_SRC_DIR}"
 
       - name: Apply V4L2-M2M patches
         run: |
-          FIREFOX_SRC_DIR=$(find . -maxdepth 1 -type d -name "firefox-esr-*" | head -n 1)
-          echo "Firefox source directory: $FIREFOX_SRC_DIR"
-          cp -r ./debian "$FIREFOX_SRC_DIR/"
-          cd "$FIREFOX_SRC_DIR"
+          cd "${{ env.FIREFOX_SRC_DIR }}"
+          cp -r ../debian .
           quilt push -a
 
       - name: Build Debian package
         run: |
-          FIREFOX_SRC_DIR=$(find . -maxdepth 1 -type d -name "firefox-esr-*" | head -n 1)
-          cd "$FIREFOX_SRC_DIR"
+          cd "${{ env.FIREFOX_SRC_DIR }}"
           dpkg-buildpackage -us -uc -b
 
       - name: Upload built .deb packages
